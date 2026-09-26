@@ -1,0 +1,15 @@
+[Unit]
+Description=Article Store — articles, essays and stories saved from the web, with their text
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/kayushkincom/bin/article-store
+Environment=ARTICLE_STORE_ADDR=127.0.0.1:8318
+Environment=HOME=/home/kayushkincom
+WorkingDirectory=/home/kayushkincom/repos/article-store
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
