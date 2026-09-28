@@ -426,11 +426,9 @@ func (s *Store) RefetchArticle(ctx context.Context, id, sourceHTML string) (Arti
 	case sourceHTML != "" || existing.SourceKind == SourceKindWebPage:
 		extraction, err = s.extractFrom(ctx, existing.URL, sourceHTML)
 	case existing.SourceKind == SourceKindSubstackPostAPI:
-		var post SubstackPost
-		post, err = FetchSubstackPost(ctx, s.httpClient, existing.URL)
-		if err == nil {
-			extraction, err = post.Extraction(existing.URL)
-		}
+		extraction, err = extractSubstackPost(ctx, s.httpClient, existing.URL)
+	case existing.SourceKind == SourceKindWordPressPostAPI:
+		extraction, err = s.refetchWordPressPost(ctx, existing)
 	default:
 		err = fmt.Errorf("article %s has source_kind %q, which this build cannot fetch", id, existing.SourceKind)
 	}
@@ -518,8 +516,8 @@ func (s *Store) getArticleByURL(normalizedURL string) (Article, error) {
 	return s.getArticleWhere(`url = ?`, normalizedURL)
 }
 
-// GetFetchedSource returns what was fetched for the article: a page's HTML or
-// Substack's JSON for a post, as source_kind says.
+// GetFetchedSource returns what was fetched for the article: a page's HTML, or
+// a platform's JSON for a post, as source_kind says.
 func (s *Store) GetFetchedSource(id string) (string, error) {
 	if err := checkID(id); err != nil {
 		return "", err

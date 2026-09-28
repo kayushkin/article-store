@@ -34,6 +34,21 @@ curl -s "localhost:8318/articles/article_000001?format=markdown"
   quick requests, so a backfill is a job inside the service, not a script: one
   request per `ARTICLE_STORE_BACKFILL_REQUEST_INTERVAL` (5 s), a wait of the
   named `Retry-After` on a 429, and progress saved after every post.
+- **WordPress archives come through the REST API too.** `/wp-json/wp/v2/posts`
+  pages by number, not offset, and its list already carries each post's
+  `content.rendered`, so one request saves 50 posts; `_embed=author` puts the
+  author's name in the same answer. A page past the last is a 400 with the code
+  `rest_post_invalid_page_number`, which ends the backfill. The backfill turns
+  its offset into a page and a count to skip, so it carries on part way through
+  a page the same way it does on Substack.
+- **Each platform is one archive reader.** `publicationArchives` maps a
+  platform to what reads a page of its archive (`substack.go`,
+  `wordpress.go`); the backfill loop in `archive.go` is shared. A new platform
+  is a reader and a word in `PublicationPlatforms`, not a branch in another
+  platform's code.
+- **A post saved by hand is not saved twice.** Before saving a backfilled post
+  the backfill looks for its URL with either scheme and with or without the
+  trailing slash, since a person may have pasted any of them.
 - **Ids are never reused.** `id_sequences` hands out each number once, even
   after a purge, because an id may already be written on a card or in a chat.
 - **It listens on localhost only.** It fetches any URL it is handed, so open on

@@ -9,7 +9,11 @@ const (
 	// SourceKindSubstackPostAPI: fetched_source is Substack's JSON for the post
 	// (GET <publication>/api/v1/posts/<slug>) and the text is its body_html.
 	SourceKindSubstackPostAPI = "substack_post_api"
+	// SourceKindWordPressPostAPI: fetched_source is a WordPress site's JSON for
+	// the post (GET <site>/wp-json/wp/v2/posts, with _embed=author) and the
+	// text is its content.rendered.
+	SourceKindWordPressPostAPI = "wordpress_post_api"
 )
 
 // SourceKinds is the vocabulary, served by GET /vocabulary.
-var SourceKinds = []string{SourceKindWebPage, SourceKindSubstackPostAPI}
+var SourceKinds = []string{SourceKindWebPage, SourceKindSubstackPostAPI, SourceKindWordPressPostAPI}

@@ -13,8 +13,9 @@ import (
 )
 
 // PublicationPlatforms is the vocabulary a publication's platform may take. A
-// platform is here only when this store can backfill its archive.
-var PublicationPlatforms = []string{"substack"}
+// platform is here only when this store can backfill its archive:
+// publicationArchives holds its archive reader.
+var PublicationPlatforms = []string{"substack", "wordpress"}
 
 // Backfill statuses. The empty status means no backfill was ever started.
 const (
@@ -308,102 +309,12 @@ func (b *Backfiller) Step(ctx context.Context) (bool, error) {
 	if err != nil || !found {
 		return false, err
 	}
-	switch publication.Platform {
-	case "substack":
-		return true, b.stepSubstack(ctx, publication)
-	default:
+	archive, known := publicationArchives[publication.Platform]
+	if !known {
 		return true, b.Store.finishBackfill(publication.ID, BackfillStatusFailed,
 			fmt.Sprintf("platform %q has no backfill in this build", publication.Platform))
 	}
-}
-
-func (b *Backfiller) stepSubstack(ctx context.Context, publication Publication) error {
-	store := b.Store
-	entries, err := FetchSubstackArchivePage(ctx, store.httpClient, publication.BaseURL, publication.Backfill.Offset, ArchivePageSize)
-	if rateLimited, is := isRateLimited(err); is {
-		return store.setBackfillWait(publication.ID, time.Now().Add(rateLimited.RetryAfter), rateLimited.Error())
-	}
-	if err != nil {
-		return store.finishBackfill(publication.ID, BackfillStatusFailed, err.Error())
-	}
-	sleep(ctx, b.RequestInterval)
-	if len(entries) == 0 {
-		return store.finishBackfill(publication.ID, BackfillStatusDone, publication.Backfill.LastError)
-	}
-	if publication.PlatformPublicationRef == "" && entries[0].PublicationID != 0 {
-		if _, err := store.db.Exec(`UPDATE publications SET platform_publication_ref = ? WHERE id = ?`,
-			fmt.Sprint(entries[0].PublicationID), publication.ID); err != nil {
-			return err
-		}
-	}
-	for _, entry := range entries {
-		if ctx.Err() != nil {
-			return nil
-		}
-		// A stop request between entries ends the page here.
-		current, err := store.GetPublication(publication.ID)
-		if err != nil {
-			return err
-		}
-		if current.Backfill.Status != BackfillStatusRunning {
-			return nil
-		}
-		outcome, fetched, err := b.saveSubstackEntry(ctx, publication, entry)
-		if rateLimited, is := isRateLimited(err); is {
-			return store.setBackfillWait(publication.ID, time.Now().Add(rateLimited.RetryAfter), rateLimited.Error())
-		}
-		lastError := ""
-		if err != nil {
-			lastError = fmt.Sprintf("%s: %v", entry.CanonicalURL, err)
-		}
-		if err := store.recordEntry(publication.ID, outcome, lastError); err != nil {
-			return err
-		}
-		if fetched {
-			sleep(ctx, b.RequestInterval)
-		}
-	}
-	return nil
-}
-
-// saveSubstackEntry saves one archive entry and reports what happened and
-// whether it asked the site for anything.
-func (b *Backfiller) saveSubstackEntry(ctx context.Context, publication Publication, entry SubstackArchiveEntry) (backfillOutcome, bool, error) {
-	if !SubstackPostTypesSaved[entry.Type] {
-		return outcomeSkipped, false, nil
-	}
-	normalized, err := NormalizeURL(entry.CanonicalURL)
-	if err != nil {
-		return outcomeFailed, false, err
-	}
-	_, found, err := b.Store.findSaved(normalized)
-	if found || errors.Is(err, ErrDeleted) {
-		// A deleted article was removed by someone; the backfill leaves it so.
-		return outcomeAlready, false, nil
-	}
-	if err != nil {
-		return outcomeFailed, false, err
-	}
-	post, err := FetchSubstackPost(ctx, b.Store.httpClient, normalized)
-	if err != nil {
-		return outcomeFailed, true, err
-	}
-	extraction, err := post.Extraction(normalized)
-	if err != nil {
-		return outcomeFailed, true, err
-	}
-	extraction.SiteName = publication.Name
-	tags := []string{}
-	if entry.IsPaidOnly() {
-		tags = append(tags, SubstackPaidOnlyTag)
-	}
-	_, _, err = b.Store.insertArticle(ctx, normalized, extraction, savedFields{
-		Kind: "post", Tags: tags, AddedBy: "backfill " + publication.ID, PublicationID: publication.ID,
-	})
-	if err != nil {
-		return outcomeFailed, true, err
-	}
-	return outcomeSaved, true, nil
+	return true, b.stepArchive(ctx, publication, archive)
 }
 
 func sleep(ctx context.Context, duration time.Duration) {

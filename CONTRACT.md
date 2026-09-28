@@ -13,13 +13,13 @@ a field the route does not take is 400.
 | `GET` | `/articles` | `{"articles":[summary…],"total":n}`. Query: `q` (fts5 over title, byline, site, text, tags, note; adds `snippet`), `tag`, `kind`, `publication_id`, `read=true\|false`, `favorite=true\|false`, `order` (`published`: most recently published first, the default; `saved`: most recently saved first; `relevance`: the default with `q`, and 400 without it), `limit` (default 100, max 500), `offset`, `include_deleted=true`. Summaries carry no content |
 | `POST` | `/articles` | Save. Body: `url` (required), and optionally `source_html`, `title`, `byline`, `site_name`, `published_at`, `kind`, `note`, `tags`, `added_by`. **201** new, **200** the URL was already saved (not fetched again), **409** it was saved and deleted, **502** the page could not be fetched or held no article text |
 | `GET` | `/articles/{id}` | The article with `content_html`, `content_markdown`, `content_text`. `?format=markdown` answers `text/markdown`: title, byline, source, id, note, then the text |
-| `GET` | `/articles/{id}/source` | What was fetched — the page's HTML, or Substack's JSON for the post, as `source_kind` says — as `text/plain` with `nosniff` and a sandbox CSP |
+| `GET` | `/articles/{id}/source` | What was fetched — the page's HTML, or Substack's or WordPress's JSON for the post, as `source_kind` says — as `text/plain` with `nosniff` and a sandbox CSP |
 | `PATCH` | `/articles/{id}` | Any of `title`, `byline`, `site_name`, `published_at`, `kind`, `note`, `tags`, `added_by`, `read` (`true` stamps `read_at`, `false` clears it) and `favorite` (the same for `favorited_at`) |
 | `POST` | `/articles/{id}/refetch` | Fetch again the way the article was first fetched, or extract from `{"source_html":…}` as a page, and replace the content. Title, byline, site, date, kind, note, tags and read state are kept |
 | `DELETE` | `/articles/{id}` | Soft delete: gone from listings and search, still readable by id. `?hard=true` purges the row and frees the URL |
 | `POST` | `/articles/{id}/restore` | Undo a soft delete |
 | `GET` | `/publications` | `{"publications":[…]}` by name, each with its `backfill` progress and `article_count` |
-| `POST` | `/publications` | `{"platform":"substack","base_url":"https://noahpinion.substack.com","name":…}`. **201** new, **200** that base URL is already stored. `base_url` is the site's root: a path is 400 |
+| `POST` | `/publications` | `{"platform":"substack","base_url":"https://noahpinion.substack.com","name":…}`; `platform` is one of `publication_platforms` (`substack`, `wordpress`). **201** new, **200** that base URL is already stored. `base_url` is the site's root: a path is 400 |
 | `GET` | `/publications/{id}` | One publication |
 | `PATCH` | `/publications/{id}` | `{"name":…}` |
 | `POST` | `/publications/{id}/backfill` | **202**: start saving the publication's whole archive in the background. A stopped or failed backfill carries on from its offset; a done one starts again; `?restart=true` always starts again at the newest post. Posts already saved are counted, not fetched |
@@ -37,12 +37,15 @@ what `/source` serves is not.
 A publication's `backfill.status` is empty (never run), `running`, `done`,
 `failed` (the archive itself could not be read; `last_error` says why) or
 `stopped`. `offset` counts archive entries handled, newest first.
-`posts_saved`, `posts_already_saved`, `posts_skipped` (not an article, such as a
-chat thread) and `posts_failed` count what happened to them; `last_error` holds
+`posts_saved`, `posts_already_saved` (saved before, under the post's URL or the
+same URL with the other of http and https, or with or without its trailing
+slash), `posts_skipped` (not an article, such as a Substack chat thread or a
+password-protected WordPress post) and `posts_failed` count what happened to them; `last_error` holds
 the latest failure. After a 429 the backfill asks that site nothing before
 `next_attempt_at`.
 
-An article from a backfill has `publication_id`, `kind` `post`, `source_kind`
-`substack_post_api`, `added_by` `backfill publication_…`, and the tag
-`paid-only` when a reader without a subscription sees only a preview: its text
-then stops where the preview does.
+An article from a backfill has `publication_id`, `kind` `post`, `added_by`
+`backfill publication_…`, and `source_kind` `substack_post_api` or
+`wordpress_post_api`, by platform. A Substack post also has the tag `paid-only`
+when a reader without a subscription sees only a preview: its text then stops
+where the preview does.

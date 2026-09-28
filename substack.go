@@ -24,6 +24,25 @@ func (e *RateLimitedError) Error() string {
 	return fmt.Sprintf("%s answered 429 Too Many Requests; retry after %s", e.URL, e.RetryAfter)
 }
 
+// UnexpectedStatusError is an answer outside 2xx other than a 429. It is
+// ErrFetchFailed to errors.Is, and keeps the start of the body so a caller can
+// read an error code the site put there.
+type UnexpectedStatusError struct {
+	URL        string
+	Status     string
+	StatusCode int
+	Body       []byte
+}
+
+func (e *UnexpectedStatusError) Error() string {
+	return fmt.Sprintf("%v: %s answered %s", ErrFetchFailed, e.URL, e.Status)
+}
+
+func (e *UnexpectedStatusError) Unwrap() error { return ErrFetchFailed }
+
+// MaximumErrorBodyBytes caps how much of an error answer is kept.
+const MaximumErrorBodyBytes = 64 << 10
+
 // DefaultRateLimitWait is how long to wait after a 429 that names no
 // Retry-After.
 const DefaultRateLimitWait = 10 * time.Minute
@@ -107,6 +126,44 @@ func (post SubstackPost) Extraction(postURL string) (Extraction, error) {
 	return extraction, nil
 }
 
+// substackArchive reads a Substack archive through /api/v1/archive. The list
+// leaves body_html empty, so each post costs a request of its own.
+type substackArchive struct{}
+
+func (substackArchive) readPage(ctx context.Context, client *http.Client, publication Publication, offset int) (archivePage, error) {
+	substackEntries, err := FetchSubstackArchivePage(ctx, client, publication.BaseURL, offset, ArchivePageSize)
+	if err != nil {
+		return archivePage{}, err
+	}
+	page := archivePage{entries: make([]archiveEntry, 0, len(substackEntries))}
+	if len(substackEntries) > 0 && substackEntries[0].PublicationID != 0 {
+		page.platformPublicationRef = fmt.Sprint(substackEntries[0].PublicationID)
+	}
+	for _, substackEntry := range substackEntries {
+		entry := archiveEntry{
+			postURL:         substackEntry.CanonicalURL,
+			isArticle:       SubstackPostTypesSaved[substackEntry.Type],
+			extract:         extractSubstackPost,
+			extractAsksSite: true,
+		}
+		if substackEntry.IsPaidOnly() {
+			entry.tags = []string{SubstackPaidOnlyTag}
+		}
+		page.entries = append(page.entries, entry)
+	}
+	return page, nil
+}
+
+// extractSubstackPost fetches the post at postURL through the API and returns
+// what the store keeps of it.
+func extractSubstackPost(ctx context.Context, client *http.Client, postURL string) (Extraction, error) {
+	post, err := FetchSubstackPost(ctx, client, postURL)
+	if err != nil {
+		return Extraction{}, err
+	}
+	return post.Extraction(postURL)
+}
+
 // FetchSubstackArchivePage fetches up to limit archive entries of the
 // publication at baseURL, newest first, starting offset entries in.
 func FetchSubstackArchivePage(ctx context.Context, client *http.Client, baseURL string, offset, limit int) ([]SubstackArchiveEntry, error) {
@@ -164,7 +221,8 @@ func fetchJSON(ctx context.Context, client *http.Client, requestURL string) ([]b
 		return nil, &RateLimitedError{URL: requestURL, RetryAfter: retryAfter(response.Header.Get("Retry-After"))}
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, fmt.Errorf("%w: %s answered %s", ErrFetchFailed, requestURL, response.Status)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, MaximumErrorBodyBytes))
+		return nil, &UnexpectedStatusError{URL: requestURL, Status: response.Status, StatusCode: response.StatusCode, Body: body}
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, MaximumPageBytes+1))
 	if err != nil {
