@@ -175,3 +175,15 @@ func TestDeleteAndRestoreOverHTTP(t *testing.T) {
 		t.Errorf("refetch with no body = %d: %s", status, raw)
 	}
 }
+
+func TestListingRefusesABadFavoriteOrOrder(t *testing.T) {
+	server := newTestServer(t)
+	for _, query := range []string{"favorite=maybe", "order=alphabetical", "order=relevance"} {
+		if status, _, raw := do(t, server, "GET", "/articles?"+query, ""); status != http.StatusBadRequest {
+			t.Errorf("GET /articles?%s = %d: %s", query, status, raw)
+		}
+	}
+	if status, _, raw := do(t, server, "GET", "/articles?favorite=true&order=saved", ""); status != http.StatusOK {
+		t.Errorf("GET /articles?favorite=true&order=saved = %d: %s", status, raw)
+	}
+}

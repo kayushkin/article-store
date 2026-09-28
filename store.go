@@ -52,10 +52,12 @@ type ArticleSummary struct {
 	Tags          []string `json:"tags"`
 	AddedBy       string   `json:"added_by"`
 	ReadAt        int64    `json:"read_at"`
-	FetchedAt     int64    `json:"fetched_at"`
-	CreatedAt     int64    `json:"created_at"`
-	UpdatedAt     int64    `json:"updated_at"`
-	DeletedAt     int64    `json:"deleted_at"`
+	// FavoritedAt is when the article was marked a favorite, or 0.
+	FavoritedAt int64 `json:"favorited_at"`
+	FetchedAt   int64 `json:"fetched_at"`
+	CreatedAt   int64 `json:"created_at"`
+	UpdatedAt   int64 `json:"updated_at"`
+	DeletedAt   int64 `json:"deleted_at"`
 	// Snippet is set only on a search, and marks the matched words with <mark>.
 	// It is computed by the read path and never stored.
 	Snippet string `json:"snippet,omitempty"`
@@ -89,7 +91,8 @@ type SaveRequest struct {
 }
 
 // ArticlePatch is a partial update. A nil field is left alone. Read sets
-// read_at to now when true and back to 0 when false.
+// read_at to now when true and back to 0 when false; Favorite does the same
+// to favorited_at.
 type ArticlePatch struct {
 	Title       *string   `json:"title"`
 	Byline      *string   `json:"byline"`
@@ -100,16 +103,34 @@ type ArticlePatch struct {
 	Tags        *[]string `json:"tags"`
 	AddedBy     *string   `json:"added_by"`
 	Read        *bool     `json:"read"`
+	Favorite    *bool     `json:"favorite"`
 }
 
+// ArticleOrder is how a listing is sorted.
+type ArticleOrder string
+
+const (
+	// OrderPublished puts the most recently published first.
+	OrderPublished ArticleOrder = "published"
+	// OrderSaved puts the most recently saved first.
+	OrderSaved ArticleOrder = "saved"
+	// OrderRelevance ranks by the search match, and needs a query.
+	OrderRelevance ArticleOrder = "relevance"
+)
+
+// ArticleOrders is every order a listing takes.
+var ArticleOrders = []ArticleOrder{OrderPublished, OrderSaved, OrderRelevance}
+
 // ArticleFilter narrows a listing. A zero value lists every live article,
-// newest first.
+// most recently published first; a search defaults to relevance.
 type ArticleFilter struct {
 	Query          string // fts5 MATCH over title, byline, site, text, tags, note
 	Tag            string
 	Kind           string
 	PublicationID  string
 	Read           *bool
+	Favorite       *bool
+	Order          ArticleOrder
 	Limit          int
 	Offset         int
 	IncludeDeleted bool
@@ -200,6 +221,9 @@ func migrate(db *sql.DB) error {
 		{!columns["source_kind"], `ALTER TABLE articles ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'web_page'`},
 		{!columns["publication_id"], `ALTER TABLE articles ADD COLUMN publication_id TEXT NOT NULL DEFAULT ''`},
 		{true, `CREATE INDEX IF NOT EXISTS idx_articles_publication ON articles(publication_id, deleted_at)`},
+		{!columns["favorited_at"], `ALTER TABLE articles ADD COLUMN favorited_at INTEGER NOT NULL DEFAULT 0`},
+		{true, `CREATE INDEX IF NOT EXISTS idx_articles_favorited ON articles(favorited_at, deleted_at)`},
+		{true, `CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at)`},
 	}
 	for _, step := range steps {
 		if !step.needed {
@@ -440,7 +464,7 @@ func (s *Store) extractFrom(ctx context.Context, pageURL, sourceHTML string) (Ex
 }
 
 const summaryColumns = `id, url, final_url, title, byline, site_name, language, published_at, excerpt,
-	kind, source_kind, publication_id, word_count, note, tags, added_by, read_at, fetched_at, created_at, updated_at, deleted_at`
+	kind, source_kind, publication_id, word_count, note, tags, added_by, read_at, favorited_at, fetched_at, created_at, updated_at, deleted_at`
 
 type scanner interface{ Scan(...any) error }
 
@@ -449,7 +473,7 @@ func scanSummary(row scanner, extra ...any) (ArticleSummary, error) {
 	var tags string
 	destinations := append([]any{&summary.ID, &summary.URL, &summary.FinalURL, &summary.Title, &summary.Byline,
 		&summary.SiteName, &summary.Language, &summary.PublishedAt, &summary.Excerpt, &summary.Kind,
-		&summary.SourceKind, &summary.PublicationID, &summary.WordCount, &summary.Note, &tags, &summary.AddedBy, &summary.ReadAt, &summary.FetchedAt,
+		&summary.SourceKind, &summary.PublicationID, &summary.WordCount, &summary.Note, &tags, &summary.AddedBy, &summary.ReadAt, &summary.FavoritedAt, &summary.FetchedAt,
 		&summary.CreatedAt, &summary.UpdatedAt, &summary.DeletedAt}, extra...)
 	if err := row.Scan(destinations...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -537,6 +561,13 @@ func (filter ArticleFilter) where() (string, []any) {
 			clauses = append(clauses, `a.read_at = 0`)
 		}
 	}
+	if filter.Favorite != nil {
+		if *filter.Favorite {
+			clauses = append(clauses, `a.favorited_at <> 0`)
+		} else {
+			clauses = append(clauses, `a.favorited_at = 0`)
+		}
+	}
 	if len(clauses) == 0 {
 		return "", arguments
 	}
@@ -550,8 +581,31 @@ func (filter ArticleFilter) from() string {
 	return ` FROM articles a`
 }
 
-// ListArticles lists summaries: by relevance on a search, newest first
-// otherwise.
+// orderBy turns the filter's order into SQL. With no order, a search ranks by
+// relevance and a listing puts the most recently published first.
+func (filter ArticleFilter) orderBy() (string, error) {
+	order := filter.Order
+	if order == "" {
+		order = OrderPublished
+		if filter.Query != "" {
+			order = OrderRelevance
+		}
+	}
+	switch order {
+	case OrderPublished:
+		return ` ORDER BY a.published_at DESC, a.seq DESC`, nil
+	case OrderSaved:
+		return ` ORDER BY a.created_at DESC, a.seq DESC`, nil
+	case OrderRelevance:
+		if filter.Query == "" {
+			return "", fmt.Errorf("%w: order %q needs a search query", ErrInvalidArticle, order)
+		}
+		return ` ORDER BY rank`, nil
+	}
+	return "", fmt.Errorf("%w: order %q is not one of %v", ErrInvalidArticle, order, ArticleOrders)
+}
+
+// ListArticles lists summaries in the filter's order.
 func (s *Store) ListArticles(filter ArticleFilter) ([]ArticleSummary, error) {
 	if filter.Kind != "" && !IsArticleKind(filter.Kind) {
 		return nil, fmt.Errorf("%w: kind %q is not one of %v", ErrInvalidArticle, filter.Kind, ArticleKinds)
@@ -564,11 +618,13 @@ func (s *Store) ListArticles(filter ArticleFilter) ([]ArticleSummary, error) {
 		limit = 100
 	}
 	columns := "a." + strings.ReplaceAll(summaryColumns, ", ", ", a.")
-	order := ` ORDER BY a.created_at DESC, a.seq DESC`
+	order, err := filter.orderBy()
+	if err != nil {
+		return nil, err
+	}
 	if filter.Query != "" {
 		// Column 3 of articles_fts is content_text.
 		columns += `, snippet(articles_fts, 3, '<mark>', '</mark>', '…', 24)`
-		order = ` ORDER BY rank`
 	}
 	where, arguments := filter.where()
 	rows, err := s.db.Query(`SELECT `+columns+filter.from()+where+order+` LIMIT ? OFFSET ?`,
@@ -667,6 +723,14 @@ func (s *Store) PatchArticle(id string, patch ArticlePatch) (Article, error) {
 			set("read_at", now())
 		case !*patch.Read:
 			set("read_at", 0)
+		}
+	}
+	if patch.Favorite != nil {
+		switch {
+		case *patch.Favorite && existing.FavoritedAt == 0:
+			set("favorited_at", now())
+		case !*patch.Favorite:
+			set("favorited_at", 0)
 		}
 	}
 	if len(sets) == 0 {

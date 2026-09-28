@@ -45,6 +45,7 @@ func (h *handler) vocabulary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"kinds": ArticleKinds, "default_kind": DefaultArticleKind,
 		"source_kinds": SourceKinds, "publication_platforms": PublicationPlatforms,
+		"orders": ArticleOrders,
 	})
 }
 
@@ -63,6 +64,7 @@ func (h *handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		Tag:            query.Get("tag"),
 		Kind:           query.Get("kind"),
 		PublicationID:  query.Get("publication_id"),
+		Order:          ArticleOrder(query.Get("order")),
 		IncludeDeleted: isTrue(query.Get("include_deleted")),
 	}
 	var err error
@@ -81,6 +83,14 @@ func (h *handler) listArticles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter.Read = &read
+	}
+	if raw := query.Get("favorite"); raw != "" {
+		favorite, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "favorite must be true or false")
+			return
+		}
+		filter.Favorite = &favorite
 	}
 	articles, err := h.s.ListArticles(filter)
 	if respondStoreError(w, err) {

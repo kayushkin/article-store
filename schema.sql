@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS articles (
     tags             TEXT NOT NULL DEFAULT '[]',  -- JSON array
     added_by         TEXT NOT NULL DEFAULT '',
     read_at          INTEGER NOT NULL DEFAULT 0,  -- 0 = unread
+    favorited_at     INTEGER NOT NULL DEFAULT 0,  -- 0 = not a favorite
     fetched_at       INTEGER NOT NULL DEFAULT 0,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL,

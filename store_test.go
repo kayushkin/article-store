@@ -312,3 +312,66 @@ func TestRefetchReplacesContentAndKeepsCorrections(t *testing.T) {
 		t.Errorf("fetches=%d byline=%q", fetches.Load(), refetched.Byline)
 	}
 }
+
+func TestFavoriteStampsOnceClearsAndFilters(t *testing.T) {
+	store := newTestStore(t)
+	pages, _ := pageServer(t)
+	first, _, _ := store.SaveArticle(context.Background(), SaveRequest{URL: pages.URL + "/post"})
+	if _, _, err := store.SaveArticle(context.Background(), SaveRequest{URL: pages.URL + "/post?page=2"}); err != nil {
+		t.Fatal(err)
+	}
+	favorite, notFavorite := true, false
+	marked, err := store.PatchArticle(first.ID, ArticlePatch{Favorite: &favorite})
+	if err != nil || marked.FavoritedAt == 0 {
+		t.Fatalf("favorite: at=%d err=%v", marked.FavoritedAt, err)
+	}
+	again, err := store.PatchArticle(first.ID, ArticlePatch{Favorite: &favorite})
+	if err != nil || again.FavoritedAt != marked.FavoritedAt {
+		t.Errorf("favoriting twice moved favorited_at from %d to %d (err=%v)", marked.FavoritedAt, again.FavoritedAt, err)
+	}
+	favorites, err := store.ListArticles(ArticleFilter{Favorite: &favorite})
+	if err != nil || len(favorites) != 1 || favorites[0].ID != first.ID {
+		t.Errorf("favorite=true listed %v, err=%v", favorites, err)
+	}
+	if others, _ := store.ListArticles(ArticleFilter{Favorite: &notFavorite}); len(others) != 1 || others[0].ID == first.ID {
+		t.Errorf("favorite=false listed %v", others)
+	}
+	cleared, err := store.PatchArticle(first.ID, ArticlePatch{Favorite: &notFavorite})
+	if err != nil || cleared.FavoritedAt != 0 {
+		t.Errorf("unfavorite: at=%d err=%v", cleared.FavoritedAt, err)
+	}
+}
+
+func TestListingPutsTheMostRecentlyPublishedFirstUnlessAskedBySaveOrder(t *testing.T) {
+	store := newTestStore(t)
+	pages, _ := pageServer(t)
+	// Saved oldest-published last, the way an archive backfill saves them.
+	newer, _, _ := store.SaveArticle(context.Background(), SaveRequest{URL: pages.URL + "/post", PublishedAt: 1_700_000_000})
+	older, _, err := store.SaveArticle(context.Background(), SaveRequest{URL: pages.URL + "/post?page=2", PublishedAt: 1_600_000_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(filter ArticleFilter) []string {
+		found, err := store.ListArticles(filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, a := range found {
+			out = append(out, a.ID)
+		}
+		return out
+	}
+	if got := ids(ArticleFilter{}); len(got) != 2 || got[0] != newer.ID {
+		t.Errorf("default order = %v, want %s first", got, newer.ID)
+	}
+	if got := ids(ArticleFilter{Order: OrderSaved}); len(got) != 2 || got[0] != older.ID {
+		t.Errorf("saved order = %v, want %s first", got, older.ID)
+	}
+	if _, err := store.ListArticles(ArticleFilter{Order: OrderRelevance}); !errors.Is(err, ErrInvalidArticle) {
+		t.Errorf("relevance without a query: err = %v, want ErrInvalidArticle", err)
+	}
+	if _, err := store.ListArticles(ArticleFilter{Order: "alphabetical"}); !errors.Is(err, ErrInvalidArticle) {
+		t.Errorf("an unknown order: err = %v, want ErrInvalidArticle", err)
+	}
+}

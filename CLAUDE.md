@@ -2,7 +2,7 @@
 
 ## What it owns
 
-`127.0.0.1:8318`, unit `article-store.service`. Articles, essays and stories saved from the web: the URL, the text pulled out of the page as sanitized HTML, markdown and plain text, what was fetched, and your tags, note and read state. Also the publications they come from — a Substack, say — with an import of each one's whole archive. Ids are `article_000001` and `publication_000001`. Routes are rooted at `/`, not `/api`. `CONTRACT.md` is the route table and `README.md` the reasoning.
+`127.0.0.1:8318`, unit `article-store.service`. Articles, essays and stories saved from the web: the URL, the text pulled out of the page as sanitized HTML, markdown and plain text, what was fetched, and your tags, note, read state and favorites. Also the publications they come from — a Substack, say — with an import of each one's whole archive. Ids are `article_000001` and `publication_000001`. Routes are rooted at `/`, not `/api`. `CONTRACT.md` is the route table and `README.md` the reasoning.
 
 ## Where this prompt lives
 
