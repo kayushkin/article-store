@@ -13,8 +13,10 @@ import (
 	"time"
 
 	readability "codeberg.org/readeck/go-readability/v2"
+	"codeberg.org/readeck/go-readability/v2/render"
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/microcosm-cc/bluemonday"
+	"golang.org/x/net/html"
 )
 
 // ErrFetchFailed marks a page that could not be fetched or was not HTML. It is
@@ -50,7 +52,9 @@ type Extraction struct {
 	ContentMarkdown string
 	ContentText     string
 	WordCount       int
-	SourceHTML      string
+	// FetchedSource is what was fetched, and SourceKind says what that is.
+	FetchedSource string
+	SourceKind    string
 }
 
 // contentPolicy is what survives in content_html. The page is somebody else's
@@ -100,8 +104,8 @@ func FetchPage(ctx context.Context, client *http.Client, pageURL string) (string
 	return string(body), response.Request.URL.String(), nil
 }
 
-// Extract pulls the article out of a page's HTML. pageURL resolves the page's
-// relative links and images.
+// Extract pulls the article out of a page's HTML with readability. pageURL
+// resolves the page's relative links and images.
 func Extract(sourceHTML, pageURL string) (Extraction, error) {
 	parsed, err := url.Parse(pageURL)
 	if err != nil {
@@ -118,12 +122,34 @@ func Extract(sourceHTML, pageURL string) (Extraction, error) {
 	if err := article.RenderHTML(&rendered); err != nil {
 		return Extraction{}, fmt.Errorf("render extracted html: %w", err)
 	}
-	contentHTML := contentPolicy.Sanitize(rendered.String())
-	var text bytes.Buffer
-	if err := article.RenderText(&text); err != nil {
-		return Extraction{}, fmt.Errorf("render extracted text: %w", err)
+	extraction, err := contentFromArticleHTML(rendered.String(), pageURL)
+	if err != nil {
+		return Extraction{}, err
 	}
-	contentText := strings.TrimSpace(text.String())
+	extraction.Title = strings.TrimSpace(article.Title())
+	extraction.Byline = strings.TrimSpace(article.Byline())
+	extraction.SiteName = strings.TrimSpace(article.SiteName())
+	extraction.Language = strings.TrimSpace(article.Language())
+	extraction.Excerpt = strings.TrimSpace(article.Excerpt())
+	extraction.FetchedSource = sourceHTML
+	extraction.SourceKind = SourceKindWebPage
+	// A page that states no date leaves published_at at 0, which means unknown.
+	if published, err := article.PublishedTime(); err == nil && !published.IsZero() {
+		extraction.PublishedAt = published.Unix()
+	}
+	return extraction, nil
+}
+
+// contentFromArticleHTML turns HTML that is already just the article — what
+// readability found, or a post body a platform's API served — into the three
+// forms stored: sanitized HTML, markdown and plain text.
+func contentFromArticleHTML(articleHTML, pageURL string) (Extraction, error) {
+	contentHTML := contentPolicy.Sanitize(articleHTML)
+	document, err := html.Parse(strings.NewReader(contentHTML))
+	if err != nil {
+		return Extraction{}, fmt.Errorf("parse sanitized html: %w", err)
+	}
+	contentText := strings.TrimSpace(render.InnerText(document))
 	if contentText == "" {
 		return Extraction{}, fmt.Errorf("%w in %s", ErrNothingExtracted, pageURL)
 	}
@@ -131,22 +157,11 @@ func Extract(sourceHTML, pageURL string) (Extraction, error) {
 	if err != nil {
 		return Extraction{}, fmt.Errorf("convert to markdown: %w", err)
 	}
-	extraction := Extraction{
+	return Extraction{
 		FinalURL:        pageURL,
-		Title:           strings.TrimSpace(article.Title()),
-		Byline:          strings.TrimSpace(article.Byline()),
-		SiteName:        strings.TrimSpace(article.SiteName()),
-		Language:        strings.TrimSpace(article.Language()),
-		Excerpt:         strings.TrimSpace(article.Excerpt()),
 		ContentHTML:     contentHTML,
 		ContentMarkdown: strings.TrimSpace(contentMarkdown),
 		ContentText:     contentText,
 		WordCount:       len(strings.Fields(contentText)),
-		SourceHTML:      sourceHTML,
-	}
-	// A page that states no date leaves published_at at 0, which means unknown.
-	if published, err := article.PublishedTime(); err == nil && !published.IsZero() {
-		extraction.PublishedAt = published.Unix()
-	}
-	return extraction, nil
+	}, nil
 }

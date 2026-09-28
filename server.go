@@ -26,6 +26,13 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("DELETE /articles/{id}", h.deleteArticle)
 	mux.HandleFunc("POST /articles/{id}/restore", h.restoreArticle)
 	mux.HandleFunc("POST /articles/{id}/refetch", h.refetchArticle)
+
+	mux.HandleFunc("GET /publications", h.listPublications)
+	mux.HandleFunc("POST /publications", h.addPublication)
+	mux.HandleFunc("GET /publications/{id}", h.getPublication)
+	mux.HandleFunc("PATCH /publications/{id}", h.patchPublication)
+	mux.HandleFunc("POST /publications/{id}/backfill", h.startBackfill)
+	mux.HandleFunc("POST /publications/{id}/backfill/stop", h.stopBackfill)
 }
 
 type handler struct{ s *Store }
@@ -35,7 +42,10 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) vocabulary(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"kinds": ArticleKinds, "default_kind": DefaultArticleKind})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kinds": ArticleKinds, "default_kind": DefaultArticleKind,
+		"source_kinds": SourceKinds, "publication_platforms": PublicationPlatforms,
+	})
 }
 
 func (h *handler) listTags(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +62,7 @@ func (h *handler) listArticles(w http.ResponseWriter, r *http.Request) {
 		Query:          query.Get("q"),
 		Tag:            query.Get("tag"),
 		Kind:           query.Get("kind"),
+		PublicationID:  query.Get("publication_id"),
 		IncludeDeleted: isTrue(query.Get("include_deleted")),
 	}
 	var err error
@@ -146,11 +157,11 @@ func RenderMarkdown(article Article) string {
 	return b.String()
 }
 
-// getSource serves the page as fetched, as plain text: it is somebody else's
-// unsanitized HTML, and served as HTML it would run on whatever origin proxies
-// this store.
+// getSource serves what was fetched, as plain text: it is somebody else's
+// unsanitized markup, and served as HTML it would run on whatever origin
+// proxies this store.
 func (h *handler) getSource(w http.ResponseWriter, r *http.Request) {
-	source, err := h.s.GetSource(r.PathValue("id"))
+	source, err := h.s.GetFetchedSource(r.PathValue("id"))
 	if respondStoreError(w, err) {
 		return
 	}
@@ -210,6 +221,76 @@ func (h *handler) refetchArticle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, article)
+}
+
+func (h *handler) listPublications(w http.ResponseWriter, r *http.Request) {
+	publications, err := h.s.ListPublications()
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"publications": publications})
+}
+
+// addPublication answers 201 with the new publication, or 200 with the one
+// already stored at that base URL.
+func (h *handler) addPublication(w http.ResponseWriter, r *http.Request) {
+	var request PublicationRequest
+	if !decodeStrict(w, r, &request) {
+		return
+	}
+	publication, created, err := h.s.AddPublication(request)
+	if respondStoreError(w, err) {
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, publication)
+}
+
+func (h *handler) getPublication(w http.ResponseWriter, r *http.Request) {
+	publication, err := h.s.GetPublication(r.PathValue("id"))
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, publication)
+}
+
+func (h *handler) patchPublication(w http.ResponseWriter, r *http.Request) {
+	var patch struct {
+		Name *string `json:"name"`
+	}
+	if !decodeStrict(w, r, &patch) {
+		return
+	}
+	if patch.Name == nil {
+		writeErr(w, http.StatusBadRequest, "nothing to change: name is the only field PATCH takes")
+		return
+	}
+	publication, err := h.s.PatchPublicationName(r.PathValue("id"), *patch.Name)
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, publication)
+}
+
+// startBackfill sets the archive backfill running and answers 202: the work
+// happens in the background, and GET /publications/{id} shows its progress.
+func (h *handler) startBackfill(w http.ResponseWriter, r *http.Request) {
+	publication, err := h.s.StartBackfill(r.PathValue("id"), isTrue(r.URL.Query().Get("restart")))
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusAccepted, publication)
+}
+
+func (h *handler) stopBackfill(w http.ResponseWriter, r *http.Request) {
+	publication, err := h.s.StopBackfill(r.PathValue("id"))
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, publication)
 }
 
 // decodeStrict decodes a JSON body and refuses a field the type does not have:

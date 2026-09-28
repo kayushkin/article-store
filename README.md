@@ -26,6 +26,14 @@ curl -s "localhost:8318/articles/article_000001?format=markdown"
   html-to-markdown. The byline readability finds is sometimes wrong — on Slate
   Star Codex it reads "Posted on" — so a caller may send its own on save, and
   fix it later with `PATCH`.
+- **Substack archives come through Substack's API, not its pages.** A
+  publication's `/api/v1/archive` lists its posts and `/api/v1/posts/<slug>`
+  serves one post's `body_html`: the article and nothing else, a sixth the size
+  of the page, with the real authors and date. The archive list leaves
+  `body_html` empty, so it is one request per post. Substack answers 429 to
+  quick requests, so a backfill is a job inside the service, not a script: one
+  request per `ARTICLE_STORE_BACKFILL_REQUEST_INTERVAL` (5 s), a wait of the
+  named `Retry-After` on a 429, and progress saved after every post.
 - **Ids are never reused.** `id_sequences` hands out each number once, even
   after a purge, because an id may already be written on a card or in a chat.
 - **It listens on localhost only.** It fetches any URL it is handed, so open on

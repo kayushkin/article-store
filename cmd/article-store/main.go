@@ -26,6 +26,15 @@ func main() {
 	}
 	defer store.Close()
 
+	backfillContext, stopBackfills := context.WithCancel(context.Background())
+	defer stopBackfills()
+	backfiller := &articlestore.Backfiller{
+		Store:           store,
+		RequestInterval: settings.Duration(articlestore.SettingBackfillRequestInterval),
+		IdleInterval:    30 * time.Second,
+	}
+	go backfiller.Run(backfillContext)
+
 	mux := http.NewServeMux()
 	articlestore.RegisterHandlers(mux, store)
 	articlestore.RegisterSettingsHandler(mux, settings)
@@ -47,6 +56,7 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Println("shutting down…")
+	stopBackfills()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)

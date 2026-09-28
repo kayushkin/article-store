@@ -34,25 +34,28 @@ var ErrDeleted = errors.New("article is deleted")
 
 // ArticleSummary is an article without its content: what a listing returns.
 type ArticleSummary struct {
-	ID          string   `json:"id"`
-	URL         string   `json:"url"`
-	FinalURL    string   `json:"final_url"`
-	Title       string   `json:"title"`
-	Byline      string   `json:"byline"`
-	SiteName    string   `json:"site_name"`
-	Language    string   `json:"language"`
-	PublishedAt int64    `json:"published_at"`
-	Excerpt     string   `json:"excerpt"`
-	Kind        string   `json:"kind"`
-	WordCount   int      `json:"word_count"`
-	Note        string   `json:"note"`
-	Tags        []string `json:"tags"`
-	AddedBy     string   `json:"added_by"`
-	ReadAt      int64    `json:"read_at"`
-	FetchedAt   int64    `json:"fetched_at"`
-	CreatedAt   int64    `json:"created_at"`
-	UpdatedAt   int64    `json:"updated_at"`
-	DeletedAt   int64    `json:"deleted_at"`
+	ID          string `json:"id"`
+	URL         string `json:"url"`
+	FinalURL    string `json:"final_url"`
+	Title       string `json:"title"`
+	Byline      string `json:"byline"`
+	SiteName    string `json:"site_name"`
+	Language    string `json:"language"`
+	PublishedAt int64  `json:"published_at"`
+	Excerpt     string `json:"excerpt"`
+	Kind        string `json:"kind"`
+	SourceKind  string `json:"source_kind"`
+	// PublicationID is the publication the article came from, or empty.
+	PublicationID string   `json:"publication_id"`
+	WordCount     int      `json:"word_count"`
+	Note          string   `json:"note"`
+	Tags          []string `json:"tags"`
+	AddedBy       string   `json:"added_by"`
+	ReadAt        int64    `json:"read_at"`
+	FetchedAt     int64    `json:"fetched_at"`
+	CreatedAt     int64    `json:"created_at"`
+	UpdatedAt     int64    `json:"updated_at"`
+	DeletedAt     int64    `json:"deleted_at"`
 	// Snippet is set only on a search, and marks the matched words with <mark>.
 	// It is computed by the read path and never stored.
 	Snippet string `json:"snippet,omitempty"`
@@ -105,6 +108,7 @@ type ArticleFilter struct {
 	Query          string // fts5 MATCH over title, byline, site, text, tags, note
 	Tag            string
 	Kind           string
+	PublicationID  string
 	Read           *bool
 	Limit          int
 	Offset         int
@@ -159,7 +163,53 @@ func Open(dataDir string, httpClient *http.Client) (*Store, error) {
 		}
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db, dataDir: dataDir, httpClient: httpClient}, nil
+}
+
+// migrate brings a database made by an older schema.sql up to the current one.
+// Every step checks before it acts, so it runs on every boot.
+func migrate(db *sql.DB) error {
+	columns := map[string]bool{}
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('articles')`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// source_html became fetched_source when a source could be Substack's JSON
+	// for a post and not a page's HTML.
+	steps := []struct {
+		needed    bool
+		statement string
+	}{
+		{columns["source_html"], `ALTER TABLE articles RENAME COLUMN source_html TO fetched_source`},
+		{!columns["source_kind"], `ALTER TABLE articles ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'web_page'`},
+		{!columns["publication_id"], `ALTER TABLE articles ADD COLUMN publication_id TEXT NOT NULL DEFAULT ''`},
+		{true, `CREATE INDEX IF NOT EXISTS idx_articles_publication ON articles(publication_id, deleted_at)`},
+	}
+	for _, step := range steps {
+		if !step.needed {
+			continue
+		}
+		if _, err := db.Exec(step.statement); err != nil {
+			return fmt.Errorf("%s: %w", step.statement, err)
+		}
+	}
+	return nil
 }
 
 // Close closes the database.
@@ -234,22 +284,13 @@ func (s *Store) SaveArticle(ctx context.Context, request SaveRequest) (Article, 
 	if err != nil {
 		return Article{}, false, err
 	}
-	kind := request.Kind
-	if kind == "" {
-		kind = DefaultArticleKind
-	}
-	if !IsArticleKind(kind) {
-		return Article{}, false, fmt.Errorf("%w: kind %q is not one of %v", ErrInvalidArticle, kind, ArticleKinds)
-	}
-	if existing, err := s.getArticleByURL(normalized); err == nil {
-		if existing.DeletedAt != 0 {
-			return Article{}, false, fmt.Errorf("%w: %s was saved as %s and deleted; restore it or purge it first", ErrDeleted, normalized, existing.ID)
-		}
-		return existing, false, nil
-	} else if !errors.Is(err, ErrNotFound) {
+	fields := savedFields{Kind: request.Kind, Note: request.Note, Tags: request.Tags, AddedBy: request.AddedBy}
+	if err := fields.check(); err != nil {
 		return Article{}, false, err
 	}
-
+	if existing, found, err := s.findSaved(normalized); err != nil || found {
+		return existing, false, err
+	}
 	extraction, err := s.extractFrom(ctx, normalized, request.SourceHTML)
 	if err != nil {
 		return Article{}, false, err
@@ -266,7 +307,49 @@ func (s *Store) SaveArticle(ctx context.Context, request SaveRequest) (Article, 
 	if request.PublishedAt != 0 {
 		extraction.PublishedAt = request.PublishedAt
 	}
+	return s.insertArticle(ctx, normalized, extraction, fields)
+}
 
+// savedFields are the parts of a new article that come from whoever saves it,
+// not from the page.
+type savedFields struct {
+	Kind          string
+	Note          string
+	Tags          []string
+	AddedBy       string
+	PublicationID string
+}
+
+func (fields *savedFields) check() error {
+	if fields.Kind == "" {
+		fields.Kind = DefaultArticleKind
+	}
+	if !IsArticleKind(fields.Kind) {
+		return fmt.Errorf("%w: kind %q is not one of %v", ErrInvalidArticle, fields.Kind, ArticleKinds)
+	}
+	return nil
+}
+
+// findSaved looks a normalized URL up. A live article is returned with found
+// true; a deleted one is ErrDeleted, since saving it again would bring back a
+// row someone chose to remove.
+func (s *Store) findSaved(normalizedURL string) (Article, bool, error) {
+	existing, err := s.getArticleByURL(normalizedURL)
+	if errors.Is(err, ErrNotFound) {
+		return Article{}, false, nil
+	}
+	if err != nil {
+		return Article{}, false, err
+	}
+	if existing.DeletedAt != 0 {
+		return Article{}, false, fmt.Errorf("%w: %s was saved as %s and deleted; restore it or purge it first", ErrDeleted, normalizedURL, existing.ID)
+	}
+	return existing, true, nil
+}
+
+// insertArticle stores a new article. If another save of the same URL landed
+// first, it returns that one and false.
+func (s *Store) insertArticle(ctx context.Context, normalizedURL string, extraction Extraction, fields savedFields) (Article, bool, error) {
 	transaction, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Article{}, false, err
@@ -280,18 +363,19 @@ func (s *Store) SaveArticle(ctx context.Context, request SaveRequest) (Article, 
 	timestamp := now()
 	_, err = transaction.Exec(`
 		INSERT INTO articles (id, seq, url, final_url, title, byline, site_name, language, published_at,
-			excerpt, kind, content_html, content_markdown, content_text, word_count, source_html,
-			note, tags, added_by, fetched_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, seq, normalized, extraction.FinalURL, extraction.Title, extraction.Byline, extraction.SiteName,
-		extraction.Language, extraction.PublishedAt, extraction.Excerpt, kind, extraction.ContentHTML,
-		extraction.ContentMarkdown, extraction.ContentText, extraction.WordCount, extraction.SourceHTML,
-		request.Note, encodeTags(request.Tags), request.AddedBy, timestamp, timestamp, timestamp)
+			excerpt, kind, content_html, content_markdown, content_text, word_count, fetched_source,
+			source_kind, publication_id, note, tags, added_by, fetched_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, seq, normalizedURL, extraction.FinalURL, extraction.Title, extraction.Byline, extraction.SiteName,
+		extraction.Language, extraction.PublishedAt, extraction.Excerpt, fields.Kind, extraction.ContentHTML,
+		extraction.ContentMarkdown, extraction.ContentText, extraction.WordCount, extraction.FetchedSource,
+		extraction.SourceKind, fields.PublicationID, fields.Note, encodeTags(fields.Tags), fields.AddedBy,
+		timestamp, timestamp, timestamp)
 	var sqliteError sqlite3.Error
 	if errors.As(err, &sqliteError) && sqliteError.ExtendedCode == sqlite3.ErrConstraintUnique {
 		// Another save of the same URL landed while this one was fetching.
 		transaction.Rollback()
-		existing, err := s.getArticleByURL(normalized)
+		existing, err := s.getArticleByURL(normalizedURL)
 		return existing, false, err
 	}
 	if err != nil {
@@ -304,25 +388,39 @@ func (s *Store) SaveArticle(ctx context.Context, request SaveRequest) (Article, 
 	return saved, true, err
 }
 
-// RefetchArticle fetches the article's URL again (or reads sourceHTML) and
-// replaces its content. The fields a person may have corrected — title, byline,
-// site, date, kind, note, tags, read state — are left alone.
+// RefetchArticle fetches the article again the way it was first fetched, or
+// reads sourceHTML as its page, and replaces its content. The fields a person
+// may have corrected — title, byline, site, date, kind, note, tags, read state
+// — are left alone.
 func (s *Store) RefetchArticle(ctx context.Context, id, sourceHTML string) (Article, error) {
 	existing, err := s.GetArticle(id)
 	if err != nil {
 		return Article{}, err
 	}
-	extraction, err := s.extractFrom(ctx, existing.URL, sourceHTML)
+	var extraction Extraction
+	switch {
+	case sourceHTML != "" || existing.SourceKind == SourceKindWebPage:
+		extraction, err = s.extractFrom(ctx, existing.URL, sourceHTML)
+	case existing.SourceKind == SourceKindSubstackPostAPI:
+		var post SubstackPost
+		post, err = FetchSubstackPost(ctx, s.httpClient, existing.URL)
+		if err == nil {
+			extraction, err = post.Extraction(existing.URL)
+		}
+	default:
+		err = fmt.Errorf("article %s has source_kind %q, which this build cannot fetch", id, existing.SourceKind)
+	}
 	if err != nil {
 		return Article{}, err
 	}
 	timestamp := now()
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE articles SET final_url = ?, excerpt = ?, content_html = ?, content_markdown = ?,
-			content_text = ?, word_count = ?, source_html = ?, fetched_at = ?, updated_at = ?
+			content_text = ?, word_count = ?, fetched_source = ?, source_kind = ?, fetched_at = ?, updated_at = ?
 		WHERE id = ?`,
 		extraction.FinalURL, extraction.Excerpt, extraction.ContentHTML, extraction.ContentMarkdown,
-		extraction.ContentText, extraction.WordCount, extraction.SourceHTML, timestamp, timestamp, id)
+		extraction.ContentText, extraction.WordCount, extraction.FetchedSource, extraction.SourceKind,
+		timestamp, timestamp, id)
 	if err != nil {
 		return Article{}, err
 	}
@@ -342,7 +440,7 @@ func (s *Store) extractFrom(ctx context.Context, pageURL, sourceHTML string) (Ex
 }
 
 const summaryColumns = `id, url, final_url, title, byline, site_name, language, published_at, excerpt,
-	kind, word_count, note, tags, added_by, read_at, fetched_at, created_at, updated_at, deleted_at`
+	kind, source_kind, publication_id, word_count, note, tags, added_by, read_at, fetched_at, created_at, updated_at, deleted_at`
 
 type scanner interface{ Scan(...any) error }
 
@@ -351,7 +449,7 @@ func scanSummary(row scanner, extra ...any) (ArticleSummary, error) {
 	var tags string
 	destinations := append([]any{&summary.ID, &summary.URL, &summary.FinalURL, &summary.Title, &summary.Byline,
 		&summary.SiteName, &summary.Language, &summary.PublishedAt, &summary.Excerpt, &summary.Kind,
-		&summary.WordCount, &summary.Note, &tags, &summary.AddedBy, &summary.ReadAt, &summary.FetchedAt,
+		&summary.SourceKind, &summary.PublicationID, &summary.WordCount, &summary.Note, &tags, &summary.AddedBy, &summary.ReadAt, &summary.FetchedAt,
 		&summary.CreatedAt, &summary.UpdatedAt, &summary.DeletedAt}, extra...)
 	if err := row.Scan(destinations...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -396,13 +494,14 @@ func (s *Store) getArticleByURL(normalizedURL string) (Article, error) {
 	return s.getArticleWhere(`url = ?`, normalizedURL)
 }
 
-// GetSource returns the page as it was fetched.
-func (s *Store) GetSource(id string) (string, error) {
+// GetFetchedSource returns what was fetched for the article: a page's HTML or
+// Substack's JSON for a post, as source_kind says.
+func (s *Store) GetFetchedSource(id string) (string, error) {
 	if err := checkID(id); err != nil {
 		return "", err
 	}
 	var source string
-	err := s.db.QueryRow(`SELECT source_html FROM articles WHERE id = ?`, id).Scan(&source)
+	err := s.db.QueryRow(`SELECT fetched_source FROM articles WHERE id = ?`, id).Scan(&source)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("%w: article %s", ErrNotFound, id)
 	}
@@ -426,6 +525,10 @@ func (filter ArticleFilter) where() (string, []any) {
 	if filter.Kind != "" {
 		clauses = append(clauses, `a.kind = ?`)
 		arguments = append(arguments, filter.Kind)
+	}
+	if filter.PublicationID != "" {
+		clauses = append(clauses, `a.publication_id = ?`)
+		arguments = append(arguments, filter.PublicationID)
 	}
 	if filter.Read != nil {
 		if *filter.Read {

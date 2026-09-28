@@ -116,7 +116,7 @@ func TestSaveFetchesExtractsAndSanitizes(t *testing.T) {
 	if article.WordCount < 120 || article.WordCount > 220 {
 		t.Errorf("word_count = %d", article.WordCount)
 	}
-	source, err := store.GetSource(article.ID)
+	source, err := store.GetFetchedSource(article.ID)
 	if err != nil || !strings.Contains(source, "window.tracker") {
 		t.Errorf("source_html should keep the page as fetched (err=%v)", err)
 	}

@@ -35,9 +35,8 @@ func TestTheLiveProcessEnvironmentBuildsARegistry(t *testing.T) {
 	if len(variables) == 0 {
 		t.Fatalf("%s holds no variables: that is not a process environment", *liveEnvironmentFile)
 	}
-	// Every setting here is a string, which always parses, so New's error can
-	// only name variables. A setting of another type would have its bad value
-	// quoted: keep a secret a string.
+	// A setting that does not parse has its bad value quoted in New's error.
+	// None of these settings is a secret, so that is safe to print.
 	if _, err := NewSettingsRegistry(servicesettings.MapEnvironment(variables)); err != nil {
 		t.Fatalf("the new binary would refuse to start in this environment: %v", err)
 	}

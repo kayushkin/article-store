@@ -21,7 +21,15 @@ const OwnedEnvironmentVariablePrefix = "ARTICLE_STORE_"
 const (
 	SettingListenAddress = "listen_address"
 	SettingDataDirectory = "data_directory"
+	// SettingBackfillRequestInterval is the pause between two requests an
+	// archive backfill makes to a site.
+	SettingBackfillRequestInterval = "backfill_request_interval"
 )
+
+// DefaultBackfillRequestInterval is a guess, ten times slower than the half
+// second between requests that drew a 429 from Substack after about 25 of them
+// (2026-09-28). A 429 still only pauses the backfill.
+const DefaultBackfillRequestInterval = "5s"
 
 // DefaultListenAddress is where the service listens with nothing set.
 const DefaultListenAddress = "127.0.0.1:8318"
@@ -39,6 +47,8 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The address the HTTP server listens on. Changing it moves the service, so everything that calls it must be told the new address."},
 		{Key: SettingDataDirectory, EnvironmentVariable: "ARTICLE_STORE_DATA_DIR", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultDataDir(),
 			Description: "The directory that holds article-store.db. Changing it starts the service on whatever database is there, or an empty one; the old articles stay where they were."},
+		{Key: SettingBackfillRequestInterval, EnvironmentVariable: "ARTICLE_STORE_BACKFILL_REQUEST_INTERVAL", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeDuration, Default: DefaultBackfillRequestInterval,
+			Description: "The pause between two requests an archive backfill makes to a site. Shorter finishes sooner and draws more 429s, each of which stops that publication's backfill for the wait the site names."},
 	}
 }
 
