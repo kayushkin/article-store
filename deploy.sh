@@ -12,6 +12,8 @@ SERVICE="article-store.service"
 BINARY="article-store"
 UNIT_SRC="$REPO_DIR/$SERVICE"
 UNIT_DEST="$HOME/.config/systemd/user/$SERVICE"
+# Every scripts/<name>.sh that a scheduler job runs, installed as ~/bin/<name>.
+DISPATCHERS=(article-radar-dispatch)
 
 # schema.sql creates an FTS5 virtual table and mattn/go-sqlite3 only compiles
 # FTS5 in when asked. Without this tag the build succeeds and the service dies at
@@ -64,6 +66,15 @@ if [ -n "$live_pid" ] && [ "$live_pid" != "0" ]; then
 else
   echo "    $SERVICE is not running, so there is no environment to check"
 fi
+
+echo "==> Installing dispatchers..."
+# The scheduler shell job runs the copy in $BIN_DIR. Installing it here keeps
+# that copy from drifting behind the repo, which is what happened to
+# event-radar-dispatch when it was copied by hand.
+for name in "${DISPATCHERS[@]}"; do
+  install -Dm 755 "$REPO_DIR/scripts/$name.sh" "$BIN_DIR/$name"
+  echo "    installed: $BIN_DIR/$name"
+done
 
 echo "==> Installing systemd unit..."
 mkdir -p "$(dirname "$UNIT_DEST")"

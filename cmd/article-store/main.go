@@ -34,6 +34,12 @@ func main() {
 		IdleInterval:    30 * time.Second,
 	}
 	go backfiller.Run(backfillContext)
+	watcher := &articlestore.Watcher{
+		Store:           store,
+		RequestInterval: settings.Duration(articlestore.SettingBackfillRequestInterval),
+		IdleInterval:    time.Minute,
+	}
+	go watcher.Run(backfillContext)
 
 	mux := http.NewServeMux()
 	articlestore.RegisterHandlers(mux, store)

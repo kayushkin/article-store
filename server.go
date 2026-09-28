@@ -33,6 +33,19 @@ func RegisterHandlers(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("PATCH /publications/{id}", h.patchPublication)
 	mux.HandleFunc("POST /publications/{id}/backfill", h.startBackfill)
 	mux.HandleFunc("POST /publications/{id}/backfill/stop", h.stopBackfill)
+
+	mux.HandleFunc("GET /sources", h.listRadarSources)
+	mux.HandleFunc("POST /sources", h.addRadarSource)
+	mux.HandleFunc("GET /sources/{id}", h.getRadarSource)
+	mux.HandleFunc("PATCH /sources/{id}", h.patchRadarSource)
+	mux.HandleFunc("DELETE /sources/{id}", h.deleteRadarSource)
+	mux.HandleFunc("POST /sources/{id}/ran", h.markRadarSourceRan)
+
+	mux.HandleFunc("GET /suggestions", h.listSuggestions)
+	mux.HandleFunc("POST /suggestions", h.addSuggestion)
+	mux.HandleFunc("GET /suggestions/{id}", h.getSuggestion)
+	mux.HandleFunc("POST /suggestions/{id}/accept", h.acceptSuggestion)
+	mux.HandleFunc("POST /suggestions/{id}/dismiss", h.dismissSuggestion)
 }
 
 type handler struct{ s *Store }
@@ -45,7 +58,8 @@ func (h *handler) vocabulary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"kinds": ArticleKinds, "default_kind": DefaultArticleKind,
 		"source_kinds": SourceKinds, "publication_platforms": PublicationPlatforms,
-		"orders": ArticleOrders,
+		"orders": ArticleOrders, "radar_source_kinds": RadarSourceKinds,
+		"radar_source_statuses": RadarSourceStatuses, "suggestion_statuses": SuggestionStatuses,
 	})
 }
 
@@ -303,6 +317,137 @@ func (h *handler) stopBackfill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, publication)
 }
 
+func (h *handler) listRadarSources(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	sources, err := h.s.ListRadarSources(RadarSourceFilter{
+		Kind: query.Get("kind"), Status: query.Get("status"), Due: isTrue(query.Get("due")),
+	})
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sources": sources})
+}
+
+// addRadarSource answers 201 with the new source, or 200 with the watch that
+// already watches that publication.
+func (h *handler) addRadarSource(w http.ResponseWriter, r *http.Request) {
+	var request RadarSourceRequest
+	if !decodeStrict(w, r, &request) {
+		return
+	}
+	source, created, err := h.s.AddRadarSource(request)
+	if respondStoreError(w, err) {
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, source)
+}
+
+func (h *handler) getRadarSource(w http.ResponseWriter, r *http.Request) {
+	source, err := h.s.GetRadarSource(r.PathValue("id"))
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, source)
+}
+
+func (h *handler) patchRadarSource(w http.ResponseWriter, r *http.Request) {
+	var patch RadarSourcePatch
+	if !decodeStrict(w, r, &patch) {
+		return
+	}
+	source, err := h.s.PatchRadarSource(r.PathValue("id"), patch)
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, source)
+}
+
+func (h *handler) deleteRadarSource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if respondStoreError(w, h.s.DeleteRadarSource(id)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
+// markRadarSourceRan takes an optional {"result": …}: one line saying what the
+// run did, shown beside the source.
+func (h *handler) markRadarSourceRan(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Result string `json:"result"`
+	}
+	if r.ContentLength != 0 && !decodeStrict(w, r, &request) {
+		return
+	}
+	source, err := h.s.MarkRadarSourceRan(r.PathValue("id"), request.Result)
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, source)
+}
+
+func (h *handler) listSuggestions(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	limit, err := optionalInt(query.Get("limit"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "limit: "+err.Error())
+		return
+	}
+	suggestions, err := h.s.ListSuggestions(SuggestionFilter{Status: query.Get("status"), SourceID: query.Get("source_id"), Limit: limit})
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"suggestions": suggestions})
+}
+
+// addSuggestion answers 201 with the new suggestion, 200 with the one already
+// made for that URL (whatever its status, unchanged), or 409 when the URL is
+// already an article.
+func (h *handler) addSuggestion(w http.ResponseWriter, r *http.Request) {
+	var request SuggestionRequest
+	if !decodeStrict(w, r, &request) {
+		return
+	}
+	suggestion, created, err := h.s.AddSuggestion(request)
+	if respondStoreError(w, err) {
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, suggestion)
+}
+
+func (h *handler) getSuggestion(w http.ResponseWriter, r *http.Request) {
+	suggestion, err := h.s.GetSuggestion(r.PathValue("id"))
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, suggestion)
+}
+
+// acceptSuggestion saves the article and answers {"suggestion":…,"article":…}.
+func (h *handler) acceptSuggestion(w http.ResponseWriter, r *http.Request) {
+	suggestion, article, err := h.s.AcceptSuggestion(r.Context(), r.PathValue("id"))
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"suggestion": suggestion, "article": article})
+}
+
+func (h *handler) dismissSuggestion(w http.ResponseWriter, r *http.Request) {
+	suggestion, err := h.s.DismissSuggestion(r.PathValue("id"))
+	if respondStoreError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, suggestion)
+}
+
 // decodeStrict decodes a JSON body and refuses a field the type does not have:
 // a misspelled field would otherwise be dropped and the caller told it worked.
 func decodeStrict(w http.ResponseWriter, r *http.Request, into any) bool {
@@ -338,7 +483,7 @@ func respondStoreError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeErr(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrDeleted):
+	case errors.Is(err, ErrDeleted), errors.Is(err, ErrAlreadySaved):
 		writeErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrInvalidArticle):
 		writeErr(w, http.StatusBadRequest, err.Error())

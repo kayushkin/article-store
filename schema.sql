@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS id_sequences (
 );
 INSERT OR IGNORE INTO id_sequences (name, last) VALUES ('article', 0);
 INSERT OR IGNORE INTO id_sequences (name, last) VALUES ('publication', 0);
+INSERT OR IGNORE INTO id_sequences (name, last) VALUES ('source', 0);
+INSERT OR IGNORE INTO id_sequences (name, last) VALUES ('suggestion', 0);
 
 -- publications: a newsletter or blog whose posts are saved here, such as one
 -- Substack. An article from it carries its id in articles.publication_id.
@@ -110,3 +112,50 @@ CREATE TRIGGER IF NOT EXISTS articles_fts_after_update AFTER UPDATE ON articles 
     INSERT INTO articles_fts(rowid, title, byline, site_name, content_text, tags, note)
     VALUES (new.seq, new.title, new.byline, new.site_name, new.content_text, new.tags, new.note);
 END;
+
+-- sources: the article radar's list of where to look for new reading. A watch
+-- is one publication, checked for new posts by the store itself; research and
+-- scout are prompts a scheduled agent session works (scripts/
+-- article-radar-dispatch.sh). A proposed source never runs: the due query
+-- asks for status 'active', and only a person moves a source there.
+CREATE TABLE IF NOT EXISTS sources (
+    id              TEXT PRIMARY KEY,               -- source_000001
+    seq             INTEGER NOT NULL UNIQUE,        -- from id_sequences
+    kind            TEXT NOT NULL,                  -- watch | research | scout
+    name            TEXT NOT NULL DEFAULT '',       -- display only
+    status          TEXT NOT NULL DEFAULT 'proposed', -- active | proposed | rejected
+    enabled         INTEGER NOT NULL DEFAULT 1,     -- pause switch, apart from status
+    cadence_hours   INTEGER NOT NULL,
+    next_run_at     INTEGER NOT NULL DEFAULT 0,
+    last_run_at     INTEGER NOT NULL DEFAULT 0,
+    last_result     TEXT NOT NULL DEFAULT '',
+    publication_id  TEXT NOT NULL DEFAULT '',       -- watch: publications.id, once there is one
+    platform        TEXT NOT NULL DEFAULT '',       -- watch: the platform of a blog not yet a publication
+    base_url        TEXT NOT NULL DEFAULT '',       -- watch: its root URL, normalized
+    prompt          TEXT NOT NULL DEFAULT '',       -- research: the topic; scout: what to look for
+    notes           TEXT NOT NULL DEFAULT '',       -- what the proposer checked, and why
+    proposed_by     TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sources_due ON sources(status, enabled, next_run_at);
+
+-- suggestions: an article an agent thinks is worth reading, not yet saved.
+-- Accepting one saves the article through the ordinary save path; a URL is
+-- suggested once, and a dismissed one is never suggested again.
+CREATE TABLE IF NOT EXISTS suggestions (
+    id          TEXT PRIMARY KEY,                   -- suggestion_000001
+    seq         INTEGER NOT NULL UNIQUE,            -- from id_sequences
+    url         TEXT NOT NULL UNIQUE,               -- normalized as articles.url
+    title       TEXT NOT NULL DEFAULT '',
+    byline      TEXT NOT NULL DEFAULT '',
+    site_name   TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL,                      -- why the agent picked it
+    source_id   TEXT NOT NULL DEFAULT '',           -- sources.id of what found it; '' = none
+    status      TEXT NOT NULL DEFAULT 'proposed',   -- proposed | accepted | dismissed
+    article_id  TEXT NOT NULL DEFAULT '',           -- articles.id, once accepted
+    decided_at  INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status, created_at);

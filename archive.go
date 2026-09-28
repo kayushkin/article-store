@@ -126,7 +126,7 @@ func (b *Backfiller) stepArchive(ctx context.Context, publication Publication, a
 		if current.Backfill.Status != BackfillStatusRunning {
 			return nil
 		}
-		outcome, askedSite, err := b.saveArchiveEntry(ctx, publication, entry)
+		outcome, askedSite, err := store.saveArchiveEntry(ctx, publication, entry, "backfill "+publication.ID)
 		if rateLimited, is := isRateLimited(err); is {
 			return store.setBackfillWait(publication.ID, time.Now().Add(rateLimited.RetryAfter), rateLimited.Error())
 		}
@@ -144,9 +144,10 @@ func (b *Backfiller) stepArchive(ctx context.Context, publication Publication, a
 	return nil
 }
 
-// saveArchiveEntry saves one archive entry and reports what happened and
-// whether it asked the site for anything.
-func (b *Backfiller) saveArchiveEntry(ctx context.Context, publication Publication, entry archiveEntry) (backfillOutcome, bool, error) {
+// saveArchiveEntry saves one archive entry of the publication, with addedBy
+// naming what saved it, and reports what happened and whether it asked the
+// site for anything. The backfill and the watch both save posts through here.
+func (s *Store) saveArchiveEntry(ctx context.Context, publication Publication, entry archiveEntry, addedBy string) (backfillOutcome, bool, error) {
 	if !entry.isArticle {
 		return outcomeSkipped, false, nil
 	}
@@ -154,7 +155,7 @@ func (b *Backfiller) saveArchiveEntry(ctx context.Context, publication Publicati
 	if err != nil {
 		return outcomeFailed, false, err
 	}
-	_, found, err := b.Store.findSavedPost(normalized)
+	_, found, err := s.findSavedPost(normalized)
 	if found || errors.Is(err, ErrDeleted) {
 		// A deleted article was removed by someone; the backfill leaves it so.
 		return outcomeAlready, false, nil
@@ -162,7 +163,7 @@ func (b *Backfiller) saveArchiveEntry(ctx context.Context, publication Publicati
 	if err != nil {
 		return outcomeFailed, false, err
 	}
-	extraction, err := entry.extract(ctx, b.Store.httpClient, normalized)
+	extraction, err := entry.extract(ctx, s.httpClient, normalized)
 	if err != nil {
 		return outcomeFailed, entry.extractAsksSite, err
 	}
@@ -171,8 +172,8 @@ func (b *Backfiller) saveArchiveEntry(ctx context.Context, publication Publicati
 	if tags == nil {
 		tags = []string{}
 	}
-	_, _, err = b.Store.insertArticle(ctx, normalized, extraction, savedFields{
-		Kind: "post", Tags: tags, AddedBy: "backfill " + publication.ID, PublicationID: publication.ID,
+	_, _, err = s.insertArticle(ctx, normalized, extraction, savedFields{
+		Kind: "post", Tags: tags, AddedBy: addedBy, PublicationID: publication.ID,
 	})
 	if err != nil {
 		return outcomeFailed, entry.extractAsksSite, err

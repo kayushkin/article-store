@@ -51,6 +51,21 @@ curl -s "localhost:8318/articles/article_000001?format=markdown"
   trailing slash, since a person may have pasted any of them.
 - **Ids are never reused.** `id_sequences` hands out each number once, even
   after a purge, because an id may already be written on a card or in a chat.
+- **The radar copies event-store's and job-store's.** A source has a kind, a
+  cadence and a status, `GET /sources?due=1` holds the approval gate in one
+  clause, and `PATCH` is where a person decides. Two differences: a blank
+  status here means `proposed`, not `active`, so a source nobody approved
+  cannot run; and a watch needs no model, so the store runs it itself, like
+  the backfill, instead of paying for an agent session to read a JSON archive.
+  Research and scout do need one, and only the scheduled
+  `article-radar-dispatch` starts it, only when one of them is due.
+- **A watch reads as little as it can.** Posts come newest first, so the first
+  one already saved means the rest are older. A watch reads the next archive
+  page only when every post on this one was new, and stops at two pages: a
+  whole archive is the backfill's job, which a person starts on purpose.
+- **Suggestions are not articles.** An agent's pick is a proposal until a
+  person accepts it, and only then is it fetched and saved. A dismissed URL
+  stays dismissed: posting it again answers the old row.
 - **It listens on localhost only.** It fetches any URL it is handed, so open on
   every interface it would fetch internal addresses for anyone on the network.
   dash proxies it, behind dash's own login.

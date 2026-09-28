@@ -25,6 +25,7 @@ type fakeSubstack struct {
 	// rateLimitNextPostRequests answers that many post requests with 429.
 	rateLimitNextPostRequests int
 	postRequests              int
+	archiveRequests           int
 }
 
 func newFakeSubstack(t *testing.T) *fakeSubstack {
@@ -50,6 +51,7 @@ func (fake *fakeSubstack) addPost(slug, postType, audience string) {
 func (fake *fakeSubstack) archive(w http.ResponseWriter, r *http.Request) {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
+	fake.archiveRequests++
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	page := []SubstackArchiveEntry{}
