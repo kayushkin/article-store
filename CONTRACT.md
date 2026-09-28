@@ -1,7 +1,7 @@
 # article-store routes
 
 Rooted at `/`. JSON in and out unless a route says otherwise. Ids are
-`article_000001`; a malformed id is 400, an unknown one 404. A request body with
+`article_000001` and `publication_000001`; a malformed id is 400, an unknown one 404. A request body with
 a field the route does not take is 400.
 
 | Method | Path | What it does |
@@ -18,7 +18,6 @@ a field the route does not take is 400.
 | `POST` | `/articles/{id}/refetch` | Fetch again the way the article was first fetched, or extract from `{"source_html":…}` as a page, and replace the content. Title, byline, site, date, kind, note, tags and read state are kept |
 | `DELETE` | `/articles/{id}` | Soft delete: gone from listings and search, still readable by id. `?hard=true` purges the row and frees the URL |
 | `POST` | `/articles/{id}/restore` | Undo a soft delete |
-
 | `GET` | `/publications` | `{"publications":[…]}` by name, each with its `backfill` progress and `article_count` |
 | `POST` | `/publications` | `{"platform":"substack","base_url":"https://noahpinion.substack.com","name":…}`. **201** new, **200** that base URL is already stored. `base_url` is the site's root: a path is 400 |
 | `GET` | `/publications/{id}` | One publication |
@@ -33,7 +32,7 @@ is where the fetch ended after redirects. `published_at`, `read_at`,
 `fetched_at`, `created_at`, `updated_at` and `deleted_at` are unix seconds; 0
 means unknown, unread, or not deleted. `byline` is the author as the page prints
 it — display text, never a key. `content_html` is sanitized and safe to render;
-`source_html` is not.
+what `/source` serves is not.
 
 A publication's `backfill.status` is empty (never run), `running`, `done`,
 `failed` (the archive itself could not be read; `last_error` says why) or
