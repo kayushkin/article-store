@@ -1,6 +1,6 @@
 module github.com/kayushkin/article-store
 
-go 1.25.0
+go 1.26.0
 
 require (
 	codeberg.org/readeck/go-readability/v2 v2.1.2
@@ -21,8 +21,8 @@ require (
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/itlightning/dateparse v0.2.1 // indirect
 	github.com/kayushkin/llm-bridge v0.0.0
-	golang.org/x/net v0.55.0
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/net v0.62.0
+	golang.org/x/text v0.43.0 // indirect
 )
 
 replace github.com/kayushkin/llm-bridge => ../llm-bridge
