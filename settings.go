@@ -47,7 +47,7 @@ func SettingDefinitions() []servicesettings.Definition {
 			Description: "The address the HTTP server listens on. Changing it moves the service, so everything that calls it must be told the new address."},
 		{Key: SettingDataDirectory, EnvironmentVariable: "ARTICLE_STORE_DATA_DIR", Kind: msg.ServiceSettingKindPath, ValueType: msg.ServiceSettingValueTypeString, Default: DefaultDataDir(),
 			Description: "The directory that holds article-store.db. Changing it starts the service on whatever database is there, or an empty one; the old articles stay where they were."},
-		{Key: SettingBackfillRequestInterval, EnvironmentVariable: "ARTICLE_STORE_BACKFILL_REQUEST_INTERVAL", Kind: msg.ServiceSettingKindBehaviour, ValueType: msg.ServiceSettingValueTypeDuration, Default: DefaultBackfillRequestInterval,
+		{Key: SettingBackfillRequestInterval, EnvironmentVariable: "ARTICLE_STORE_BACKFILL_REQUEST_INTERVAL", Kind: msg.ServiceSettingKindBehavior, ValueType: msg.ServiceSettingValueTypeDuration, Default: DefaultBackfillRequestInterval,
 			Description: "The pause between two requests an archive backfill makes to a site. Shorter finishes sooner and draws more 429s, each of which stops that publication's backfill for the wait the site names."},
 	}
 }
