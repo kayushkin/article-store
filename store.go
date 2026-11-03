@@ -245,7 +245,7 @@ func (s *Store) DataDir() string { return s.dataDir }
 func now() int64 { return time.Now().Unix() }
 
 // formatID renders a sequence number as the public id. The prefix lets dash's
-// resolver and kanban-store's entity-type registry recognise an article id in
+// resolver and kanban-store's entity-type registry recognize an article id in
 // prose without claiming every number or uuid.
 func formatID(seq int64) string { return fmt.Sprintf("article_%06d", seq) }
 

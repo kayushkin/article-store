@@ -76,7 +76,7 @@ A **source** is a place the radar looks for new reading. `kind` is one of:
   the next archive page only when every post on this one was new, and at most
   2 pages a run; `last_result` counts what it did. It does not run while its
   publication's backfill is running, or inside a 429 wait, which it keeps on the
-  publication (`backfill.next_attempt_at`) so the backfill honours it too.
+  publication (`backfill.next_attempt_at`) so the backfill honors it too.
 - **`research`** — `prompt` is a topic. `article-radar-dispatch` hands it to an
   agent session, which posts `/suggestions` with a reason.
 - **`scout`** — `prompt` says what writers to look for. The session proposes
